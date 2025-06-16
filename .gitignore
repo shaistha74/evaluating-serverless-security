@@ -35,3 +35,31 @@ override.tf.json
 # Ignore CLI configuration files
 .terraformrc
 terraform.rc
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+.env.*
+
+# AWS credentials (never commit these!)
+.aws/
+*.pem
+*.key
+
+# VS Code
+.vscode/
+
+# Logs
+*.log
+
+# MacOS
+.DS_Store
+
+# Node (if using for scripts/UI)
+node_modules/
+
+# System files
+Thumbs.db
