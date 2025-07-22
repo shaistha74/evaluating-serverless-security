@@ -1,42 +1,50 @@
-provider "aws" {
-  region = "us-east-1"
+locals {
+  region         = "us-east-1"
+  cidr_block     = "10.1.0.0/16"
+  public_subnets = ["10.1.1.0/24", "10.1.2.0/24"]
+  azs            = ["us-east-1c", "us-east-1d"]
+  project_name   = "CyberSecureInfra"
 }
 
-# 1. VPC, Subnets, ALB, EC2 
+provider "aws" {
+  region = local.region
+}
 
-module "network" {
+data "aws_caller_identity" "current" {}
+
+# VPC and Networking
+module "vpc_infrastructure" {
   source  = "terraform-aws-modules/vpc/aws"
   version = "5.1.1"
 
-  name = "secure-network"
-  cidr = "10.0.0.0/16"
-
-  azs                  = ["us-east-1a", "us-east-1b"]
-  public_subnets       = ["10.0.1.0/24", "10.0.2.0/24"]
+  name                 = "${local.project_name}-vpc"
+  cidr                 = local.cidr_block
+  azs                  = local.azs
+  public_subnets       = local.public_subnets
   enable_dns_hostnames = true
-
+  
   tags = {
-    Project = "Monitoring"
+    Project = local.project_name
   }
 }
 
-resource "aws_security_group" "ec2_sg" {
-  name        = "ec2_sg"
-  description = "Allow SSH and HTTP"
-  vpc_id      = module.network.vpc_id
+resource "aws_security_group" "bastion_sg" {
+  name        = "bastion-sg"
+  description = "Access rules for SSH and HTTP"
+  vpc_id      = module.vpc_infrastructure.vpc_id
 
   ingress {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["90.254.227.254/32"]
   }
 
   ingress {
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["90.254.227.254/32"]
   }
 
   egress {
@@ -46,8 +54,19 @@ resource "aws_security_group" "ec2_sg" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 }
-resource "aws_iam_role" "ec2_instance_role" {
-  name = "EC2CloudWatchAgentRole"
+
+resource "aws_route_table" "public_routes" {
+  vpc_id = module.vpc_infrastructure.vpc_id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = module.vpc_infrastructure.igw_id
+  }
+}
+
+# IAM for EC2
+resource "aws_iam_role" "instance_iam_role" {
+  name = "InstanceAccessRole"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17",
@@ -63,24 +82,45 @@ resource "aws_iam_role" "ec2_instance_role" {
   })
 }
 
-resource "aws_iam_role_policy_attachment" "cloudwatch_agent_policy" {
-  role       = aws_iam_role.ec2_instance_role.name
+resource "aws_iam_role_policy_attachment" "attach_cloudwatch" {
+  role       = aws_iam_role.instance_iam_role.name
   policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
 }
 
-resource "aws_iam_instance_profile" "ec2_profile" {
-  name = "ec2-instance-profile"
-  role = aws_iam_role.ec2_instance_role.name
+resource "aws_iam_role_policy_attachment" "attach_ssm" {
+  role       = aws_iam_role.instance_iam_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
-resource "aws_instance" "bastion" {
-  ami                    = "ami-05ffe3c48a9991133"
-  instance_type          = "t2.micro"
-  subnet_id              = module.network.public_subnets[0]
-  vpc_security_group_ids = [aws_security_group.ec2_sg.id]
-  iam_instance_profile   = aws_iam_instance_profile.ec2_profile.name
+resource "aws_iam_role_policy_attachment" "attach_logs" {
+  role       = aws_iam_role.instance_iam_role.name
+  policy_arn = "arn:aws:iam::aws:policy/CloudWatchLogsFullAccess"
+}
 
-#Install CLoudwatch-agent
+resource "aws_iam_instance_profile" "profile_instance" {
+  name = "ec2-instance-access-profile"
+  role = aws_iam_role.instance_iam_role.name
+}
+
+data "aws_ami" "amazon_linux" {
+  most_recent = true
+  owners      = ["amazon"]
+
+  filter {
+    name   = "name"
+    values = ["amzn2-ami-hvm-*-x86_64-gp2"]
+  }
+}
+
+# Bastion Host EC2
+resource "aws_instance" "bastion_host" {
+  ami                    = data.aws_ami.amazon_linux.id
+  instance_type          = "t2.micro"
+  subnet_id              = module.vpc_infrastructure.public_subnets[0]
+  vpc_security_group_ids = [aws_security_group.bastion_sg.id]
+  iam_instance_profile   = aws_iam_instance_profile.profile_instance.name
+  key_name               = aws_key_pair.bastion.key_name
+
   user_data = <<-EOF
               #!/bin/bash
               yum update -y
@@ -105,32 +145,94 @@ resource "aws_instance" "bastion" {
                   }
                 }
               }
-              EOC
-              /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+EOC
+              systemctl enable amazon-ssm-agent
+              systemctl start amazon-ssm-agent
+              /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \\
                 -a fetch-config -m ec2 -c file:/opt/aws/amazon-cloudwatch-agent/bin/config.json -s
-              EOF
+EOF
 
   tags = {
-    Name = "Bastion"
+    Name        = "BastionHost"
+    Environment = "Production"
   }
 }
 
-resource "aws_instance" "web" {
-  ami                    = "ami-05ffe3c48a9991133"
+# Web Server
+resource "aws_instance" "web_server" {
+  ami                    = data.aws_ami.amazon_linux.id
   instance_type          = "t2.micro"
-  subnet_id              = module.network.public_subnets[1]
-  vpc_security_group_ids = [aws_security_group.ec2_sg.id]
-  iam_instance_profile   = aws_iam_instance_profile.ec2_profile.name
-
-  user_data = aws_instance.bastion.user_data # reuse same script
+  subnet_id              = module.vpc_infrastructure.public_subnets[1]
+  vpc_security_group_ids = [aws_security_group.bastion_sg.id]
+  iam_instance_profile   = aws_iam_instance_profile.profile_instance.name
+  user_data              = aws_instance.bastion_host.user_data
+  key_name               = aws_key_pair.bastion.key_name
 
   tags = {
-    Name = "WebServer"
+    Name        = "WebServer"
+    Environment = "Production"
   }
 }
 
-resource "aws_s3_bucket_policy" "config_access" {
-  bucket = aws_s3_bucket.log_archiving.id
+resource "tls_private_key" "bastion_key" {
+  algorithm = "RSA"
+  rsa_bits  = 4096
+}
+
+resource "aws_key_pair" "bastion" {
+  key_name   = "bastion-key"
+  public_key = tls_private_key.bastion_key.public_key_openssh
+}
+
+# Central Log Bucket
+resource "random_id" "s3_suffix" {
+  byte_length = 4
+}
+
+resource "aws_s3_bucket" "central_log_bucket" {
+  bucket        = "cloud-logs-${random_id.s3_suffix.hex}"
+  force_destroy = true
+}
+
+# GuardDuty
+resource "aws_guardduty_detector" "gd_detector" {
+  enable = true
+}
+
+# AWS Config
+resource "aws_iam_role" "config_service_role" {
+  name = "AWSConfigServiceRole"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Action = "sts:AssumeRole",
+        Effect = "Allow",
+        Principal = {
+          Service = "config.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "config_service_policy" {
+  role       = aws_iam_role.config_service_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSConfigRoleForOrganizations"
+}
+
+resource "aws_config_configuration_recorder" "config_recorder" {
+  name     = "ConfigRecorder"
+  role_arn = aws_iam_role.config_service_role.arn
+
+  recording_group {
+    all_supported = true
+  }
+}
+
+resource "aws_s3_bucket_policy" "allow_config" {
+  bucket = aws_s3_bucket.central_log_bucket.id
 
   policy = jsonencode({
     Version = "2012-10-17",
@@ -140,8 +242,8 @@ resource "aws_s3_bucket_policy" "config_access" {
         Principal = {
           Service = "config.amazonaws.com"
         },
-        Action = "s3:PutObject",
-        Resource = "${aws_s3_bucket.log_archiving.arn}/*",
+        Action = ["s3:PutObject"],
+        Resource = "${aws_s3_bucket.central_log_bucket.arn}/*",
         Condition = {
           StringEquals = {
             "AWS:SourceAccount" = data.aws_caller_identity.current.account_id
@@ -154,19 +256,35 @@ resource "aws_s3_bucket_policy" "config_access" {
           Service = "config.amazonaws.com"
         },
         Action = "s3:GetBucketAcl",
-        Resource = aws_s3_bucket.log_archiving.arn
+        Resource = aws_s3_bucket.central_log_bucket.arn
       }
     ]
   })
 }
 
-data "aws_caller_identity" "current" {}
+resource "aws_config_delivery_channel" "config_channel" {
+  name           = "ConfigChannel"
+  s3_bucket_name = aws_s3_bucket.central_log_bucket.bucket
 
+  depends_on = [
+    aws_iam_role_policy_attachment.config_service_policy,
+    aws_s3_bucket.central_log_bucket
+  ]
+}
 
-# 2. CloudWatch Logs + S3 Archive 
-resource "aws_cloudwatch_log_group" "ec2_logs" {
-  name              = "/ec2/monitoring"
-  retention_in_days = 7
+# CloudTrail
+resource "aws_cloudtrail" "account_trail1" {
+  name                          = "AccountActivityTrail"
+  s3_bucket_name                = aws_s3_bucket.log_archiving.bucket
+  include_global_service_events = true
+  is_multi_region_trail         = true
+  enable_logging                = true
+
+  depends_on = [aws_s3_bucket_policy.trail_bucket_policy]
+}
+
+resource "random_id" "bucket_id" {
+  byte_length = 4
 }
 
 resource "aws_s3_bucket" "log_archiving" {
@@ -174,93 +292,151 @@ resource "aws_s3_bucket" "log_archiving" {
   force_destroy = true
 }
 
-resource "random_id" "bucket_id" {
-  byte_length = 4
+resource "aws_s3_bucket_policy" "trail_bucket_policy" {
+  bucket = aws_s3_bucket.log_archiving.id
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Sid       = "AWSCloudTrailAclCheck",
+        Effect    = "Allow",
+        Principal = {
+          Service = "cloudtrail.amazonaws.com"
+        },
+        Action    = "s3:GetBucketAcl",
+        Resource  = aws_s3_bucket.log_archiving.arn
+      },
+      {
+        Sid       = "AWSCloudTrailWrite",
+        Effect    = "Allow",
+        Principal = {
+          Service = "cloudtrail.amazonaws.com"
+        },
+        Action    = "s3:PutObject",
+        Resource  = "${aws_s3_bucket.log_archiving.arn}/AWSLogs/${data.aws_caller_identity.current.account_id}/*",
+        Condition = {
+          StringEquals = {
+            "s3:x-amz-acl" = "bucket-owner-full-control"
+          }
+        }
+      }
+    ]
+  })
 }
 
-# 3. Security Services: GuardDuty, Config   #
-
-resource "aws_guardduty_detector" "main" {
-  enable = true #enable GuardDutyter
+# Security Hub + SNS
+resource "aws_securityhub_account" "shub" {
+  depends_on = [aws_guardduty_detector.gd_detector]
 }
 
-
-resource "aws_config_configuration_recorder" "recorder" {
-  name     = "config"
-  role_arn = aws_iam_role.config_role.arn
-  recording_group {
-    all_supported = true
-  }
+resource "aws_sns_topic" "alerting_topic" {
+  name = "security-alert-topic"
 }
 
-resource "aws_config_delivery_channel" "channel" {
-  name           = "config"
-  s3_bucket_name = aws_s3_bucket.log_archiving.bucket
-
- depends_on = [
-    aws_s3_bucket_policy.config_access,
-    aws_config_configuration_recorder.recorder
-  ]
+resource "aws_sns_topic_subscription" "email_alert" {
+  topic_arn = aws_sns_topic.alerting_topic.arn
+  protocol  = "email"
+  endpoint  = "shaika74@gmail.com"
 }
 
-resource "aws_iam_role" "config_role" {
-  name               = "config-role"
-  assume_role_policy = data.aws_iam_policy_document.config_assume.json
+# Lambda for auto-remediation
+resource "aws_iam_role" "lambda_execution_role" {
+  name = "LambdaExecutionSecurityRole"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Action = "sts:AssumeRole",
+        Principal = {
+          Service = "lambda.amazonaws.com"
+        },
+        Effect = "Allow"
+      }
+    ]
+  })
 }
 
-data "aws_iam_policy_document" "config_assume" {
-  statement {
-    actions = ["sts:AssumeRole"]
-    principals {
-      type        = "Service"
-      identifiers = ["config.amazonaws.com"]
-    }
-  }
+resource "aws_iam_policy" "lambda_s3_write_policy" {
+  name = "LambdaS3LogWrite"
+
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Action   = ["s3:PutObject"],
+        Effect   = "Allow",
+        Resource = "${aws_s3_bucket.central_log_bucket.arn}/*"
+      }
+    ]
+  })
 }
 
-resource "aws_iam_role_policy_attachment" "config_policy" {
-  role       = aws_iam_role.config_role.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSConfigRoleForOrganizations"
-
+resource "aws_iam_role_policy_attachment" "lambda_write_attach" {
+  role       = aws_iam_role.lambda_execution_role.name
+  policy_arn = aws_iam_policy.lambda_s3_write_policy.arn
 }
 
-#Security Hub + SNS for Alerting
-resource "aws_securityhub_account" "hub" {
-  depends_on = [aws_guardduty_detector.main]
-}
-
-resource "aws_sns_topic" "alerts" {
-  name = "security-alerts"
-}
-
-#Lambda for Auto-remediation
-resource "aws_iam_role" "lambda_exec" {
-  name = "lambda_exec_role"
-  assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
-}
-
-data "aws_iam_policy_document" "lambda_assume" {
-  statement {
-    actions = ["sts:AssumeRole"]
-    principals {
-      type        = "Service"
-      identifiers = ["lambda.amazonaws.com"]
-    }
-  }
-}
-
-resource "aws_lambda_function" "remediate" {
+resource "aws_lambda_function" "security_lambda" {
   filename         = "lambda/remediate.zip"
-  function_name    = "AutoRemediate"
-  role             = aws_iam_role.lambda_exec.arn
+  function_name    = "SecurityEventResponder"
+  role             = aws_iam_role.lambda_execution_role.arn
   handler          = "index.handler"
   runtime          = "python3.9"
   source_code_hash = filebase64sha256("lambda/remediate.zip")
 
   environment {
     variables = {
-      SNS_TOPIC = aws_sns_topic.alerts.arn
+      SNS_TOPIC  = aws_sns_topic.alerting_topic.arn
+      LOG_BUCKET = aws_s3_bucket.central_log_bucket.bucket
     }
   }
 }
 
+# EventBridge triggers
+resource "aws_cloudwatch_event_rule" "guardduty_alerts" {
+  name        = "GDAlertsTrigger"
+  description = "Trigger for GuardDuty security alerts"
+
+  event_pattern = jsonencode({
+    source = ["aws.guardduty"]
+  })
+}
+
+resource "aws_cloudwatch_event_rule" "securityhub_alerts" {
+  name        = "SHAlertsTrigger"
+  description = "Trigger for Security Hub findings"
+
+  event_pattern = jsonencode({
+    source = ["aws.securityhub"]
+  })
+}
+
+resource "aws_cloudwatch_event_target" "gd_lambda_target" {
+  rule      = aws_cloudwatch_event_rule.guardduty_alerts.name
+  target_id = "GDToLambda"
+  arn       = aws_lambda_function.security_lambda.arn
+}
+
+resource "aws_cloudwatch_event_target" "sh_lambda_target" {
+  rule      = aws_cloudwatch_event_rule.securityhub_alerts.name
+  target_id = "SHToLambda"
+  arn       = aws_lambda_function.security_lambda.arn
+}
+
+resource "aws_lambda_permission" "allow_gd_eventbridge" {
+  statement_id  = "AllowGDInvokeLambda"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.security_lambda.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.guardduty_alerts.arn
+}
+
+resource "aws_lambda_permission" "allow_sh_eventbridge" {
+  statement_id  = "AllowSHInvokeLambda"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.security_lambda.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.securityhub_alerts.arn
+}
