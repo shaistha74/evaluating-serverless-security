@@ -1,6 +1,6 @@
-Evaluating the Effectiveness of Terraform-Deployed AWS Serverless Architecture for Threat Detection and Compliance Automation
+**Evaluating the Effectiveness of Terraform-Deployed AWS Serverless Architecture for Threat Detection and Compliance Automation**
 
-Project Description
+**Project Description**
 This project investigates and evaluates a serverless AWS security architecture, deployed via Terraform, to detect threats and enforce compliance automatically. With the growing adoption of serverless computing, traditional security mechanisms fall short in identifying and remediating dynamic cloud threats. This research aims to fill this gap by integrating AWS-native services such as Lambda, CloudTrail, GuardDuty, AWS Config, SNS, and Security Hub in a Terraform-driven pipeline.
 
 Core Focus:
