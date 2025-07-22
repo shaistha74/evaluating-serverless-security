@@ -3,7 +3,7 @@
 **Project Description**
 This project investigates and evaluates a serverless AWS security architecture, deployed via Terraform, to detect threats and enforce compliance automatically. With the growing adoption of serverless computing, traditional security mechanisms fall short in identifying and remediating dynamic cloud threats. This research aims to fill this gap by integrating AWS-native services such as Lambda, CloudTrail, GuardDuty, AWS Config, SNS, and Security Hub in a Terraform-driven pipeline.
 
-Core Focus:
+**Core Focus:**
 Real-time threat detection using AWS-native tools.
 
 Auto-remediation of misconfigurations and malicious activities.
@@ -16,7 +16,7 @@ A traditional server-based AWS setup (deployed via CLI and Terraform).
 
 Lavi et al. (2024)’s model that focuses only on detection, not remediation.
 
-Objectives
+**Objectives**
 1.Design and deploy a Terraform-based serverless AWS architecture for real-time security monitoring.
 
 2.Simulate benign and malicious Lambda functions for threat testing.
@@ -51,14 +51,14 @@ Security Hub for unified threat visibility
 
 Terraform for complete IaC-based deployment
 
-🖥Server-Based Architectures (Baselines)
+**Server-Based Architectures (Baselines)**
 Manually deployed EC2 log monitoring setup (via CLI)
 
 Terraform-deployed EC2-based log forwarding pipeline
 
-Baseline comparison with Lavi et al. (2024) detection-only model
+**Baseline comparison with Lavi et al. (2024) detection-only model**
 
-Attack Simulation Tools
+**Attack Simulation Tools**
 CloudGoat – Simulates IAM privilege escalation, Lambda abuse, and SSRF
 
 AWS GuardDuty Tester – Generates real GuardDuty findings for:
@@ -71,7 +71,7 @@ DNS exfiltration
 
 IAM abuse
 
-Evaluation Metrics
+**Evaluation Metrics**
 Metric	Description
 1. Detection Accuracy	If the architecture detects each attack
 2. Time-to-Detect	Time from attack initiation to alert
@@ -80,7 +80,7 @@ Metric	Description
 5. Reproducibility	Can the setup be deployed identically in other environments?
 6. Compliance Score	AWS Config rule violations before/after remediation
 
-Tools & Technologies
+**Tools & Technologies**
 Terraform – Infrastructure as Code
 
 AWS Lambda, EC2, S3, CloudTrail, Config, SNS, CloudWatch
@@ -91,14 +91,27 @@ CloudGoat, AWS GuardDuty Tester
 
 Checkov – Terraform misconfiguration scanning
 
-Project Status
+**Project Status**
 Server-based architectures implemented
 
 Terraform modules completed for server-based architecture setups
 
-Currently need to implement serverless setup simulating benign and malicious Lambda workloads
+Need to check on Event-driven auto-remediation with Lambda + EventBridge.
+(e.g., misconfigurations) and SNS Notifications: Sends alerts to email
 
-CloudGoat and GuardDuty attack scenarios in progress
+Along with that need to work on forwarding logs from security hub and guardduty to s3 bucket
+
+Need to simulate more attacks and identify which attacks being detected and which are not.
+
+Need to setup a few misconfigurations so that AWS config can check for compliance and auto-remediation and the same which event bridge and lambda functions.
+
+Study on GuardDuty tester attack simulation and work on setup as it is approved by AWS
+
+Setup Bengin and malicious lambda functions for triggering GuardDuty detection
+
+Collect all the logs and start the comparison and evaluation process
+
+Alternatively, try to document each and everything so that can write FPR simultaneously.
 
 Comparative analysis and evaluation scheduled for August 2025
 
@@ -117,7 +130,7 @@ Lavi et al. (2024)	         Detection Only	     No	            No	         Cloud
 License
 This project is open-source and developed solely for academic research and educational purposes. Attack simulations are performed ethically in isolated AWS environments and comply with AWS's acceptable use policies.
 
-Acknowledgements
+**Acknowledgements**
 University of Hertfordshire – MSc Cyber Security Programme
 
 AWS Educate – Research Account
